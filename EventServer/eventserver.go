@@ -17,11 +17,12 @@ var JWT_ENCRYPTION_KEY = []byte("Golangers:Pooria-Mohammad-Roya-Sina") // Encryp
 
 // Event represents an event with user, publisher, ad IDs and URL
 type Event struct {
-	UserID      string
-	PublisherID string
-	AdID        string
-	AdURL       string
-	EventType   string
+	UserID      	string
+	PublisherID 	string
+	AdID        	string
+	AdvertiserID	string
+	AdURL       	string
+	EventType   	string
 
 	jwt.StandardClaims
 }

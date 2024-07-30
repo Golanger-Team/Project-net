@@ -40,15 +40,17 @@ type FetchedAd struct {
 	ImageSource  string `json:"ImagePath"`
 	Bid          int    `json:"BidValue"`
 	RedirectLink string `json:"RedirectLink"`
+	AdvertiserID int	`json:"AdvertiserID"`
 }
 
 /* This struct will be signed by AdServer and eventually sent to Event Server. */
 type EventInfo struct {
-	UserID      string
-	PublisherID string
-	AdID        string
-	AdURL       string
-	EventType   string
+	UserID      	string
+	PublisherID 	string
+	AdID        	string
+	AdvertiserID	string
+	AdURL       	string
+	EventType   	string
 
 	jwt.StandardClaims
 }
@@ -64,7 +66,8 @@ type ResponseInfo struct {
 
 /* Global Objects */
 
-var allFetchedAds []FetchedAd // A slice containing all ads.
+var allFetchedAds []FetchedAd	// All ads that were returned by Panel in the last ad-fetching process
+var allPublishserIDs []int		// The id of all publishers having sent at least one request to AdServer
 
 /* Functions of the Server */
 
