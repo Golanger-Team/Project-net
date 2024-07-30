@@ -1,5 +1,7 @@
 package main
 
+import "math"
+
 /*
 This file will contain methods needed to fetch ads from panel,
 together with its metadata from PostgreSQL database.
@@ -48,9 +50,6 @@ upper bound: CTR * a
 lower bound: CTR / a
 */
 
-
-
-
 /* Structs and Variables Relating to Ad-fetching. */
 
 // A struct reflecting the collaboration of an ad with a publisher.
@@ -68,33 +67,36 @@ type AdvertiserPublisherCollaboration struct {
 type Statistics struct {
 	Impressions int
 	Clicks      int
-	CTR         int
+	CTR         float64
 }
 
 // An interval in which we believe that the estimated CTR probably lies.
 // This probability is a hyper-parameter that should be tuned manually.
 // (A conventional value is 95%)
 type ConfidenceInterval struct {
-	lowerBound float32
-	upperBound float32
+	lowerBound float64
+	upperBound float64
 }
 
 // Maps collaborations to their emprical success statistics.
 var evaluation map[AdPublisherCollaboration]Statistics
 
 // Maps id of each advertiser to mean ctr of its ads.
-var meanCtr map[AdvertiserPublisherCollaboration]int
+var meanCtr map[AdvertiserPublisherCollaboration]float64
 
 // Indicates a range containing the emprical CTR in which the real CTR will most likely lay.
 var toleranceRange map[AdPublisherCollaboration]ConfidenceInterval
 
 // What revenue is expected to gain from showing ad x to publisher y?
-var expectedRevenue map[AdPublisherCollaboration]float32
+var expectedRevenue map[AdPublisherCollaboration]float64
 
 // The per-publisher distribution of ads that affects the selection process.
-var weight map[AdPublisherCollaboration]float32
+var weight map[AdPublisherCollaboration]float64
 
-
+// To some extent can the actual CTR be different, relative to the estimated CTR.
+// In other words, it is assumed that actual ctr most likely lays in the interval
+// [estimated_ctr / RELATIVE_TOLERACE, estimated_ctr * RELATIVE_TOLERANCE]
+const RELATIVE_TOLERANCE = 2
 
 
 /* Functions Used for Updating Ad Statistics */
@@ -143,7 +145,7 @@ func updateExpectedRevenues() {
 		adPubCollab.PublisherID = publisherID
 		for _, ad := range allFetchedAds {
 			adPubCollab.AdID = ad.Id
-			expectedRevenue[adPubCollab] = float32(ad.Bid * evaluation[adPubCollab].CTR)
+			expectedRevenue[adPubCollab] = float64(ad.Bid) * evaluation[adPubCollab].CTR
 		}
 	}
 }
@@ -151,7 +153,34 @@ func updateExpectedRevenues() {
 /* Calculates a confidence interval for each ad-publisher estimated CTR.
  The method relies in part on the Hoeffding’s inequality. */
 func calculateToleranceRanges() {
-	// TODO
+	var adPubCollab AdPublisherCollaboration
+	var absoluteConfInterval ConfidenceInterval
+	var relativeConfInterval ConfidenceInterval
+	var finalConfInterval ConfidenceInterval
+	var ctr float64
+	var N int
+
+	for _, publisherID := range allPublisherIDs {
+		adPubCollab.PublisherID = publisherID
+		for _, ad := range allFetchedAds {
+			adPubCollab.AdID = ad.Id
+			ctr = evaluation[adPubCollab].CTR
+			N = evaluation[adPubCollab].Impressions
+			if N > 0 {
+				absoluteConfInterval.upperBound = ctr + 1.36 / math.Sqrt(float64(N))
+				absoluteConfInterval.lowerBound = ctr - 1.36 / math.Sqrt(float64(N))
+			} else {
+				absoluteConfInterval.upperBound = 1	
+				absoluteConfInterval.lowerBound = 0
+			}
+
+			relativeConfInterval.upperBound = ctr * RELATIVE_TOLERANCE
+			relativeConfInterval.lowerBound = ctr / RELATIVE_TOLERANCE
+			finalConfInterval.upperBound = min(absoluteConfInterval.upperBound, relativeConfInterval.upperBound)
+			finalConfInterval.lowerBound = max(absoluteConfInterval.lowerBound, relativeConfInterval.lowerBound)
+			toleranceRange[adPubCollab] = finalConfInterval
+		}
+	}
 }
 
 
@@ -159,8 +188,8 @@ func calculateToleranceRanges() {
 the computed confidence intervals for ad-publisher pairs. */
 func updatePerPublisherDistributions() {
 	var adPubCollab AdPublisherCollaboration
-	var maxLowerBound float32
-	var winnerAdsRevenueSum float32
+	var maxLowerBound float64
+	var winnerAdsRevenueSum float64
 
 	for _, publisherID := range allPublisherIDs {
 		adPubCollab.PublisherID = publisherID
