@@ -6,7 +6,50 @@ together with its metadata from PostgreSQL database.
 
 The result will be written to a `map` structure that maps a pair of (ad-id, publisher-id)
 to a pair of (impression count, CTR).
+
+
+IN THE FOLLOWING, A DEMO OF THE FUNCTIONALITIES
+IMPLEMENTED IN THIS FILE IS DESCRIBED
+
+
+* When fetching ads from panel:
+	* fetch ad success statistics from metadata database
+	* compute the CTR per publisher of every ad
+		A SELECT statement --> map[ad-id][publisher-id] -> (impression, ctr)
+		A SELECT statement --> map[advertiser-id] -> mean CTR
+	* if an ad is not displayed on this publisher yet, set CTR to the average CTR of ads of its advertiser
+		for on fetched-ad, publisher: if map[ad][publisher] = null: map[ad][publisher] = (0, mean CTR of advertiser)
+	* compute the revenue expected value by taking the product of CTR and bid, for each ad
+		expected[ad-id][publisher-id] = bid[ad-id]  * prob[ad-id][publisher-id]
+	* compute the tolerance range for each ad
+		algorithm described below
+	* select the ad with maximum expected value, together with ads that can 'beat' that ad as a result of tolerance.
+		---
+	* compute the relative weights of those selected ads
+		weight[ad-id][publisher-id] = expected[ad-id][publisher-id] / NORMALIZATION_TERM
+* When a publisher requests for a new ad:
+	* draw a random weighted ad, encrypt and send.
+		Maybe using the uniform distribution?
+
+
+* Confidence interval (95%):
+
+** METHOD ONE: ADDITION-BASED
+P (d <= e) > 1 - 2exp(-2e^2N) >= 0.95
+-2e^2N <= ln(0.025)
+N >=  ln(40)/(2e^2) ~= 1.8444 / e^2
+e^2 >= ln(40)/(2N)
+e >= sqrt(ln(40) / 2)  /  sqrt(N) ~= 1.36 / sqrt(N)
+upper bound: CTR + 1.36 / sqrt(N)
+lower bound: CTR - 1.36 / sqrt(N)
+
+** METHOD TWO: MULTIPLICATION-BASED
+upper bound: CTR * a
+lower bound: CTR / a
 */
+
+
+
 
 /* Structs and Variables Relating to Ad-fetching. */
 
@@ -36,20 +79,23 @@ type ConfidenceInterval struct {
 	upperBound float32
 }
 
-// Maps collaborations to their empirical success statistics.
+// Maps collaborations to their emprical success statistics.
 var evaluation map[AdPublisherCollaboration]Statistics
-
-// Indicates a range containing the emprical CTR in which the real CTR will most likely lie.
-var toleranceRange map[AdPublisherCollaboration]ConfidenceInterval
 
 // Maps id of each advertiser to mean ctr of its ads.
 var meanCtr map[AdvertiserPublisherCollaboration]int
+
+// Indicates a range containing the emprical CTR in which the real CTR will most likely lay.
+var toleranceRange map[AdPublisherCollaboration]ConfidenceInterval
 
 // What revenue is expected to gain from showing ad x to publisher y?
 var expectedRevenue map[AdPublisherCollaboration]float32
 
 // The per-publisher distribution of ads that affects the selection process.
 var weight map[AdPublisherCollaboration]float32
+
+
+
 
 /* Functions Used for Updating Ad Statistics */
 
@@ -65,30 +111,78 @@ func fetchAdStatistics() {
 
 /* For each publisher, sets CTR of its new ads to the mean CTR of its advertiser. */
 func usePriorsForNewAds() {
-	// TODO
+	var adPubCollab AdPublisherCollaboration
+	var statistics Statistics
+	var exists bool
+	var advertiserPubCollab AdvertiserPublisherCollaboration
+
+	for _, publisherID := range allPublisherIDs {
+		adPubCollab.PublisherID = publisherID
+		for _, ad := range allFetchedAds {
+			adPubCollab.AdID = ad.Id
+			statistics, exists = evaluation[adPubCollab]
+			if !exists || statistics.Impressions == 0 {
+				statistics.Impressions = 0
+				statistics.Clicks = 0
+				advertiserPubCollab.AdvertiserID = ad.AdvertiserID
+				advertiserPubCollab.PublisherID = publisherID
+				statistics.CTR = meanCtr[advertiserPubCollab]
+				evaluation[adPubCollab] = statistics
+			}
+		}
+	}
 }
 
-/*
-Updates the expected gain revenue for each ad-publisher pair by
-taking the product of the ad's bid value and the ad-publisher pair's
-estimated CTR.
-*/
+/* Updates the expected gain revenue for each ad-publisher pair by
+ taking the product of the ad's bid value and the ad-publisher pair's
+ estimated CTR. */
 func updateExpectedRevenues() {
-	// TODO
+	var adPubCollab AdPublisherCollaboration
+
+	for _, publisherID := range allPublisherIDs {
+		adPubCollab.PublisherID = publisherID
+		for _, ad := range allFetchedAds {
+			adPubCollab.AdID = ad.Id
+			expectedRevenue[adPubCollab] = float32(ad.Bid * evaluation[adPubCollab].CTR)
+		}
+	}
 }
 
-/*
-Calculates a confidence interval for each ad-publisher estimated CTR.
-The method relies in part on the Hoeffding’s inequality.
-*/
+/* Calculates a confidence interval for each ad-publisher estimated CTR.
+ The method relies in part on the Hoeffding’s inequality. */
 func calculateToleranceRanges() {
 	// TODO
 }
 
-/*
-Re-calculates per-publisher distributions on ads based on
-the computed confidence intervals for ad-publisher pairs.
-*/
+
+/* Re-calculates per-publisher distributions on ads based on
+the computed confidence intervals for ad-publisher pairs. */
 func updatePerPublisherDistributions() {
-	// TODO
+	var adPubCollab AdPublisherCollaboration
+	var maxLowerBound float32
+	var winnerAdsRevenueSum float32
+
+	for _, publisherID := range allPublisherIDs {
+		adPubCollab.PublisherID = publisherID
+		maxLowerBound = 0
+		for _, ad := range allFetchedAds {
+			adPubCollab.AdID = ad.Id
+			if toleranceRange[adPubCollab].lowerBound > maxLowerBound {
+				maxLowerBound =  toleranceRange[adPubCollab].lowerBound
+			}
+		}
+		winnerAdsRevenueSum = 0
+		for _, ad := range allFetchedAds {
+			adPubCollab.AdID = ad.Id
+			if toleranceRange[adPubCollab].upperBound >= maxLowerBound {
+				winnerAdsRevenueSum += expectedRevenue[adPubCollab]
+			}
+		}
+		for _, ad := range allFetchedAds {
+			adPubCollab.AdID = ad.Id
+			if toleranceRange[adPubCollab].upperBound >= maxLowerBound {
+				weight[adPubCollab] = expectedRevenue[adPubCollab] / winnerAdsRevenueSum
+			}
+		}
+	}
 }
