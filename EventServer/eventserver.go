@@ -65,6 +65,7 @@ type Event struct {
 	AdvertiserID	string
 	AdURL       	string
 	EventType   	string
+	Time        	int64
 
 	jwt.StandardClaims
 }
