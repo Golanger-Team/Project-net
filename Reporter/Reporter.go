@@ -154,6 +154,6 @@ func main() {
 	// Set up Kafka reader
 	reader := setupKafkaReader()
 	fmt.Println("Setup successfully!")
-	consumeEvents(reader)
-	//setupAndRunAPIRouter()
+	go consumeEvents(reader)
+	setupAndRunAPIRouter()
 }

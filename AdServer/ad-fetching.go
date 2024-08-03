@@ -1,6 +1,13 @@
 package main
 
-import "math"
+import (
+	"encoding/json"
+	"errors"
+	"io"
+	"log"
+	"math"
+	"net/http"
+)
 
 /*
 This file will contain methods needed to fetch ads from panel,
@@ -50,6 +57,10 @@ upper bound: CTR * a
 lower bound: CTR / a
 */
 
+/* Constants Configuring Functionality of Ad-Fetching */
+const MEAN_CTR_API = "/mean_ctr"
+const AD_PUBLISHER_API = "/ad_publisher"
+
 /* Structs and Variables Relating to Ad-fetching. */
 
 // A struct reflecting the collaboration of an ad with a publisher.
@@ -70,6 +81,17 @@ type Statistics struct {
 	CTR         float64
 }
 
+type CTRArrayEntry struct {
+	Collaboration	AdvertiserPublisherCollaboration
+	Stat			Statistics
+}
+
+type AdPublisherEntry struct {
+	Collaboration	AdPublisherCollaboration
+	Stat			Statistics
+}
+
+
 // An interval in which we believe that the estimated CTR probably lies.
 // This probability is a hyper-parameter that should be tuned manually.
 // (A conventional value is 95%)
@@ -79,36 +101,106 @@ type ConfidenceInterval struct {
 }
 
 // Maps collaborations to their emprical success statistics.
-var evaluation map[AdPublisherCollaboration]Statistics
+var adEvaluation = make(map[AdPublisherCollaboration]Statistics)
 
 // Maps id of each advertiser to mean ctr of its ads.
-var meanCtr map[AdvertiserPublisherCollaboration]float64
+var advertiserEvaluation = make(map[AdvertiserPublisherCollaboration]Statistics)
 
 // Indicates a range containing the emprical CTR in which the real CTR will most likely lay.
-var toleranceRange map[AdPublisherCollaboration]ConfidenceInterval
+var toleranceRange = make(map[AdPublisherCollaboration]ConfidenceInterval)
 
 // What revenue is expected to gain from showing ad x to publisher y?
-var expectedRevenue map[AdPublisherCollaboration]float64
+var expectedRevenue = make(map[AdPublisherCollaboration]float64)
 
 // The per-publisher distribution of ads that affects the selection process.
-var weight map[AdPublisherCollaboration]float64
+var weight = make(map[AdPublisherCollaboration]float64)
 
 // To some extent can the actual CTR be different, relative to the estimated CTR.
 // In other words, it is assumed that actual ctr most likely lays in the interval
 // [estimated_ctr / RELATIVE_TOLERACE, estimated_ctr * RELATIVE_TOLERANCE]
 const RELATIVE_TOLERANCE = 2
 
+var meanCtrEntries []CTRArrayEntry
+var adPubEntries []AdPublisherEntry
 
 /* Functions Used for Updating Ad Statistics */
 
-/* Queries the metadata database and retrieves each advertiser's mean CTR per publisher. */
-func fetchMeanCTRs() {
-	// TODO: Update meanCtr
+/* Issues a GET request to the specified url. Returnes the 
+ response a slice of bytes, together with errors encountered
+ in the process, if any. */
+func getRequest(getUrl string) ([]byte, error) {
+	client := http.DefaultClient
+	req, err := http.NewRequest("GET", getUrl, nil)
+	if err != nil {
+		log.Println("error in making request")
+		return nil, err
+	}
+	
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Println("error in doing request")
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		log.Println("error in Reporter")
+		return nil, errors.New("reporter sent " + resp.Status)
+	}
+	responseByte, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Println("error in reading response body")
+		return nil, err
+	}
+	return responseByte, nil
+}
+
+/* Makes a request to Reporter and retrieves each advertiser's mean CTR per publisher. */
+func fetchMeanCTRs() error {
+	responseByte, err := getRequest(MEAN_CTR_API)
+	if err != nil {
+		return err
+	}
+	err = json.Unmarshal(responseByte, &meanCtrEntries)
+	if err != nil {
+		log.Println("error in parsing response")
+		return err
+	}
+	for apc := range advertiserEvaluation {
+		delete(advertiserEvaluation, apc)
+	}
+	/* Update the map according to recieved entries. */
+	var collaboration AdvertiserPublisherCollaboration
+	var statistics Statistics
+	for _,  meanCtrEntry := range meanCtrEntries {
+		collaboration = meanCtrEntry.Collaboration
+		statistics = meanCtrEntry.Stat
+		advertiserEvaluation[collaboration] = statistics
+	}
+	return nil
 }
 
 /* Queries the metadata database and computes the success statistics of each ad-publisher pair. */
-func fetchAdStatistics() {
-	// TODO: Update success statistics
+func fetchAdStatistics() error {
+	responseByte, err := getRequest(MEAN_CTR_API)
+	if err != nil {
+		return err
+	}
+	err = json.Unmarshal(responseByte, &adPubEntries)
+	if err != nil {
+		log.Println("error in parsing response")
+		return err
+	}
+	for apc := range adEvaluation {
+		delete(adEvaluation, apc)
+	}
+	/* Update the map according to recieved entries. */
+	var collaboration AdPublisherCollaboration
+	var statistics Statistics
+	for _, adPubEntry := range adPubEntries {
+		collaboration = adPubEntry.Collaboration
+		statistics = adPubEntry.Stat
+		adEvaluation[collaboration] = statistics
+	}
+	return nil
 }
 
 /* For each publisher, sets CTR of its new ads to the mean CTR of its advertiser. */
@@ -122,14 +214,14 @@ func usePriorsForNewAds() {
 		adPubCollab.PublisherID = publisherID
 		for _, ad := range allFetchedAds {
 			adPubCollab.AdID = ad.Id
-			statistics, exists = evaluation[adPubCollab]
+			statistics, exists = adEvaluation[adPubCollab]
 			if !exists || statistics.Impressions == 0 {
 				statistics.Impressions = 0
 				statistics.Clicks = 0
 				advertiserPubCollab.AdvertiserID = ad.AdvertiserID
 				advertiserPubCollab.PublisherID = publisherID
-				statistics.CTR = meanCtr[advertiserPubCollab]
-				evaluation[adPubCollab] = statistics
+				statistics.CTR = advertiserEvaluation[advertiserPubCollab].CTR
+				adEvaluation[adPubCollab] = statistics
 			}
 		}
 	}
@@ -145,7 +237,7 @@ func updateExpectedRevenues() {
 		adPubCollab.PublisherID = publisherID
 		for _, ad := range allFetchedAds {
 			adPubCollab.AdID = ad.Id
-			expectedRevenue[adPubCollab] = float64(ad.Bid) * evaluation[adPubCollab].CTR
+			expectedRevenue[adPubCollab] = float64(ad.Bid) * adEvaluation[adPubCollab].CTR
 		}
 	}
 }
@@ -164,8 +256,8 @@ func calculateToleranceRanges() {
 		adPubCollab.PublisherID = publisherID
 		for _, ad := range allFetchedAds {
 			adPubCollab.AdID = ad.Id
-			ctr = evaluation[adPubCollab].CTR
-			N = evaluation[adPubCollab].Impressions
+			ctr = adEvaluation[adPubCollab].CTR
+			N = adEvaluation[adPubCollab].Impressions
 			if N > 0 {
 				absoluteConfInterval.upperBound = ctr + 1.36 / math.Sqrt(float64(N))
 				absoluteConfInterval.lowerBound = ctr - 1.36 / math.Sqrt(float64(N))

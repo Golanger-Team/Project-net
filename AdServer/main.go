@@ -67,6 +67,8 @@ type DisableAdsRequest struct {
 	AdIDs []int `json:"ad_ids"`
 }
 
+
+
 /* Global Objects */
 
 var allFetchedAds []FetchedAd	// All ads that were returned by Panel in the last ad-fetching process

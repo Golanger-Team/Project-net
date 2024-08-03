@@ -37,6 +37,13 @@ type AdvertiserPublisherCollaboration struct {
 	PublisherID  int
 }
 
+// Stores the statistics of a collaboration. Namely, impression count, click count and ctr.
+type Statistics struct {
+	Impressions int
+	Clicks      int
+	CTR         float64
+}
+
 type CTRArrayEntry struct {
 	Collaboration	AdvertiserPublisherCollaboration
 	Stat			Statistics
@@ -45,13 +52,6 @@ type CTRArrayEntry struct {
 type AdPublisherEntry struct {
 	Collaboration	AdPublisherCollaboration
 	Stat			Statistics
-}
-
-// Stores the statistics of a collaboration. Namely, impression count, click count and ctr.
-type Statistics struct {
-	Impressions int
-	Clicks      int
-	CTR         float64
 }
 
 // Maps advertiser-publisher collaborations to their emprical success statistics.
