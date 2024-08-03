@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 
@@ -12,17 +13,17 @@ const MEAN_CTR_API = "/mean_ctr"
 const AD_PUBLISHER_API = "/ad_publisher"
 
 type AdvertiserPublisherEventCount struct {
-	advertiser_id	string
-	publisher_id	string
-	event_type		string
-	total			int
+	AdvertiserId	string
+	PublisherId		string
+	EventType		string
+	Total			int
 }
 
 type AdPublisherEventCount struct {
-	ad_id			string
-	publisher_id	string
-	event_type		string
-	total			int
+	AdId			string
+	PublisherId		string
+	EventType		string
+	Total			int
 }
 
 // A struct reflecting the collaboration of an ad with a publisher.
@@ -36,6 +37,15 @@ type AdvertiserPublisherCollaboration struct {
 	PublisherID  int
 }
 
+type CTRArrayEntry struct {
+	Collaboration	AdvertiserPublisherCollaboration
+	Stat			Statistics
+}
+
+type AdPublisherEntry struct {
+	Collaboration	AdPublisherCollaboration
+	Stat			Statistics
+}
 
 // Stores the statistics of a collaboration. Namely, impression count, click count and ctr.
 type Statistics struct {
@@ -45,29 +55,29 @@ type Statistics struct {
 }
 
 // Maps advertiser-publisher collaborations to their emprical success statistics.
-var advertiserEvaluation map[AdvertiserPublisherCollaboration]Statistics
+var advertiserEvaluation  = make(map[AdvertiserPublisherCollaboration]Statistics)
 
 // Maps ad-publisher collaborations to ther emprical success statistics.
-var adEvaluation map[AdPublisherCollaboration]Statistics
+var adEvaluation = make(map[AdPublisherCollaboration]Statistics)
+var eventCounts []AdvertiserPublisherEventCount
 
 /* Sends the mean ctr of each advertiser's ads, per publisher. */
 func sendAdvertisersMeanCTR(c *gin.Context) {
 	var timeCondition = "time > now() - INTERVAL '1 hour'"
-	var eventCounts []AdvertiserPublisherEventCount
 	db.Table("events").Select("advertiser_id, publisher_id, event_type, count(1) AS total").Where(timeCondition).Group("advertiser_id, publisher_id, event_type").Scan(&eventCounts)
-
+	fmt.Printf("eventCounts: %v\n", eventCounts)
 	var collaboration AdvertiserPublisherCollaboration
 	for _, eventCount := range eventCounts {
 		var statistics Statistics
-		collaboration.AdvertiserID, _ = strconv.Atoi(eventCount.advertiser_id)
-		collaboration.PublisherID,  _ = strconv.Atoi(eventCount.publisher_id)
+		collaboration.AdvertiserID, _ = strconv.Atoi(eventCount.AdvertiserId)
+		collaboration.PublisherID,  _ = strconv.Atoi(eventCount.PublisherId)
 		
 		statistics = advertiserEvaluation[collaboration]
-		switch eventCount.event_type {
+		switch eventCount.EventType {
 		case "impression":
-			statistics.Impressions = eventCount.total
+			statistics.Impressions = eventCount.Total
 		case "click":
-			statistics.Clicks = eventCount.total
+			statistics.Clicks = eventCount.Total
 		default:
 			c.AbortWithStatus(http.StatusInternalServerError)
 			return
@@ -78,6 +88,7 @@ func sendAdvertisersMeanCTR(c *gin.Context) {
 	/* Compute CTR, together with fixing possible inconsistencies
 	 in data. These inconsistencies can happen, for example by
 	 latency in arrival of click and impression events. */
+	var entries []CTRArrayEntry
 	for apc := range advertiserEvaluation {
 		var statistics = advertiserEvaluation[apc]
 		if statistics.Impressions < statistics.Clicks {
@@ -87,10 +98,15 @@ func sendAdvertisersMeanCTR(c *gin.Context) {
 			statistics.CTR = float64(statistics.Clicks) / float64(statistics.Impressions)
 		}
 		advertiserEvaluation[apc] = statistics
+		var newEntry CTRArrayEntry
+		newEntry.Collaboration = apc
+		newEntry.Stat = statistics
+		entries = append(entries, newEntry)
 	}
 	
 	/* Our statistics map is now ready to be sent. */
-	c.JSON(http.StatusOK, advertiserEvaluation)
+	fmt.Printf("Array is ready to be sent: %v\n", entries)
+	c.JSON(http.StatusOK, entries)
 }
 
 
@@ -103,15 +119,15 @@ func sendAdStatistics(c *gin.Context) {
 
 	var collaboration AdPublisherCollaboration
 	for _, eventCount := range eventCounts {
-		collaboration.AdID, _ = strconv.Atoi(eventCount.ad_id)
-		collaboration.PublisherID, _ = strconv.Atoi(eventCount.publisher_id)
+		collaboration.AdID, _ = strconv.Atoi(eventCount.AdId)
+		collaboration.PublisherID, _ = strconv.Atoi(eventCount.PublisherId)
 
 		var statistics = adEvaluation[collaboration]
-		switch eventCount.event_type {
+		switch eventCount.EventType {
 		case "impression":
-			statistics.Impressions = eventCount.total
+			statistics.Impressions = eventCount.Total
 		case "click":
-			statistics.Clicks = eventCount.total
+			statistics.Clicks = eventCount.Total
 		default:
 			c.AbortWithStatus(http.StatusInternalServerError)
 		}
@@ -120,6 +136,7 @@ func sendAdStatistics(c *gin.Context) {
 	/* Compute CTR, together with fixing possible inconsistencies
 	 in data. These inconsistencies can happen, for example by
 	 latency in arrival of click and impression events. */
+	var entries []AdPublisherEntry
 	for apc := range adEvaluation {
 		var statistics = adEvaluation[apc]
 		if statistics.Impressions < statistics.Clicks {
@@ -129,10 +146,14 @@ func sendAdStatistics(c *gin.Context) {
 			statistics.CTR = float64(statistics.Clicks) / float64(statistics.Impressions)
 		}
 		adEvaluation[apc] = statistics
+		var newEntry AdPublisherEntry
+		newEntry.Collaboration = apc
+		newEntry.Stat = statistics
+		entries = append(entries, newEntry)
 	}
 
 	/* Our statistics map is now ready to be sent. */
-	c.JSON(http.StatusOK, adEvaluation)
+	c.JSON(http.StatusOK, entries)
 }
 
 /* Runs the router that will route api calls from ad server to
