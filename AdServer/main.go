@@ -72,10 +72,10 @@ type DisableAdsRequest struct {
 
 /* Global Objects */
 
-var allFetchedAds []FetchedAd		// All ads that were returned by Panel in the last ad-fetching process
-var allPublisherIDs []int			// The id of all publishers having sent at least one request to AdServer
-var publishersToRegister chan int	// A channel to which new publisherIds will be pushed to be added to allPublisherIDs later
-var processedPublishers []int		// Publishers for which a distribution is available
+var allFetchedAds []FetchedAd				// All ads that were returned by Panel in the last ad-fetching process
+var allPublisherIDs []int					// The id of all publishers having sent at least one request to AdServer
+var publishersToRegister = make(chan int)	// A channel to which new publisherIds will be pushed to be added to allPublisherIDs later
+var processedPublishers []int				// Publishers for which a distribution is available
 
 /* Functions of the Server */
 

@@ -58,6 +58,7 @@ lower bound: CTR / a
 */
 
 /* Constants Configuring Functionality of Ad-Fetching */
+const REPORTER_URL = "https://reporter.lontratech.com"
 const MEAN_CTR_API = "/mean_ctr"
 const AD_PUBLISHER_API = "/ad_publisher"
 
@@ -155,7 +156,7 @@ func getRequest(getUrl string) ([]byte, error) {
 
 /* Makes a request to Reporter and retrieves each advertiser's mean CTR per publisher. */
 func fetchMeanCTRs() error {
-	responseByte, err := getRequest(MEAN_CTR_API)
+	responseByte, err := getRequest(REPORTER_URL + MEAN_CTR_API)
 	if err != nil {
 		return err
 	}
@@ -180,7 +181,7 @@ func fetchMeanCTRs() error {
 
 /* Queries the metadata database and computes the success statistics of each ad-publisher pair. */
 func fetchAdStatistics() error {
-	responseByte, err := getRequest(MEAN_CTR_API)
+	responseByte, err := getRequest(REPORTER_URL + MEAN_CTR_API)
 	if err != nil {
 		return err
 	}

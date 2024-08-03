@@ -8,4 +8,4 @@ COPY . .
 
 RUN go mod tidy
 
-RUN go build -o adserver main.go
+RUN go build -o adserver main.go ad-fetching.go
