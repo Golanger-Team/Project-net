@@ -282,10 +282,20 @@ func updatePerPublisherDistributions() {
 	var adPubCollab AdPublisherCollaboration
 	var maxLowerBound float64
 	var winnerAdsRevenueSum float64
+	var hasBeenProcessed bool
 
 	for _, publisherID := range allPublisherIDs {
 		adPubCollab.PublisherID = publisherID
 		maxLowerBound = 0
+
+		hasBeenProcessed = false
+		for _, proccesedPublisher := range processedPublishers {
+			if proccesedPublisher == publisherID {
+				hasBeenProcessed = true
+			}
+		}
+
+		
 		for _, ad := range allFetchedAds {
 			adPubCollab.AdID = ad.Id
 			if toleranceRange[adPubCollab].lowerBound > maxLowerBound {
@@ -305,5 +315,27 @@ func updatePerPublisherDistributions() {
 				weight[adPubCollab] = expectedRevenue[adPubCollab] / winnerAdsRevenueSum
 			}
 		}
+		if !hasBeenProcessed {
+			processedPublishers = append(processedPublishers, publisherID)
+		}
 	}
+}
+
+
+/* Fetches statistics from Reporter, performs calculations on them and
+ eventually updates the per-publisher distribution of ads. Returns the first
+ encountered error in this process, if any. */
+func epoch() error {
+	var err error
+	if err = fetchMeanCTRs(); err != nil {
+		return err
+	}
+	if err = fetchAdStatistics(); err != nil {
+		return err
+	}
+	usePriorsForNewAds()
+	updateExpectedRevenues()
+	calculateToleranceRanges()
+	updatePerPublisherDistributions()
+	return nil
 }

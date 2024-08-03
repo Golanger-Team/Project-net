@@ -3,9 +3,6 @@ package main
 import (
 	"encoding/json"
 	"errors"
-	"github.com/dgrijalva/jwt-go"
-	"github.com/gin-gonic/gin"
-	"github.com/zsais/go-gin-prometheus"
 	"io"
 	"log"
 	"math/rand"
@@ -13,6 +10,10 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/dgrijalva/jwt-go"
+	"github.com/gin-gonic/gin"
+	"github.com/zsais/go-gin-prometheus"
 )
 
 /* Constants Configuring Functionality of the Server */
@@ -20,7 +21,7 @@ import (
 var TEST_RAW_RESPONSE = []byte(`[{"Id":1,"Title":"12","ImagePath":"uploads\\treesample.png","BidValue":12,"IsActive":true,"Clicks":0,"Impressions":0,"AdvertiserID":2,"Advertiser":{"Id":0,"Name":"","Credit":0}},{"Id":6,"Title":"144","ImagePath":"media\\treesample.png","BidValue":144,"IsActive":true,"Clicks":0,"Impressions":0,"AdvertiserID":2,"Advertiser":{"Id":0,"Name":"","Credit":0}},{"Id":11,"Title":"test","ImagePath":"media/swoled_20240722144230_2.jpg","BidValue":12,"IsActive":true,"Clicks":0,"Impressions":0,"AdvertiserID":2,"Advertiser":{"Id":0,"Name":"","Credit":0}},{"Id":10,"Title":"first","ImagePath":"media/s.jpg","BidValue":100,"IsActive":true,"Clicks":0,"Impressions":0,"AdvertiserID":2,"Advertiser":{"Id":0,"Name":"","Credit":0}}]`)
 
 const ADSERVER_PORT = 9090 // The port on which AdServer listens.
-const FETCH_PERIOD = 60    // How many seconds to wait between fetching
+const FETCH_PERIOD = 30    // How many seconds to wait between fetching
 // Ads from Panel.
 const FETCH_URL = "https://panel.lontra.tech/api/v1/ads/active/" // Address from which ads are to be fetched.
 const EVENT_URL = "https://eventserver.lontra.tech/"             // Address to which ads are to be sent.
@@ -71,8 +72,10 @@ type DisableAdsRequest struct {
 
 /* Global Objects */
 
-var allFetchedAds []FetchedAd	// All ads that were returned by Panel in the last ad-fetching process
-var allPublisherIDs []int		// The id of all publishers having sent at least one request to AdServer
+var allFetchedAds []FetchedAd		// All ads that were returned by Panel in the last ad-fetching process
+var allPublisherIDs []int			// The id of all publishers having sent at least one request to AdServer
+var publishersToRegister chan int	// A channel to which new publisherIds will be pushed to be added to allPublisherIDs later
+var processedPublishers []int		// Publishers for which a distribution is available
 
 /* Functions of the Server */
 
@@ -117,7 +120,7 @@ func fetchAdsOnce() error {
 		log.Printf("Successful Ad Fetch.\nallAds: %+v\n", allFetchedAds)
 	}
 
-	return nil
+	return epoch()
 }
 
 func RemoveDisabledAds(disabledAdIds []int) {
@@ -158,14 +161,60 @@ func periodicallyFetchAds() {
 	}
 }
 
+
+/* Reads publisher id of new publishers from corresponding channel, 
+ adds them to allPublisherIDs. */
+func registerNewPublishers() {
+	var newPublisher int
+	for {
+		newPublisher = <- publishersToRegister
+		allPublisherIDs = append(allPublisherIDs, newPublisher)
+	}
+}
+
+func drawAdFromDistribution(publisherId int) FetchedAd {
+	var uniform = rand.Float64()
+	var accumulation float64 = 0
+	var collaboration AdPublisherCollaboration
+	collaboration.PublisherID = publisherId
+	var maxWeight float64 = 0
+	var weightiestAd FetchedAd
+
+	for _, fetchedAd := range allFetchedAds {
+		collaboration.AdID = fetchedAd.Id
+		accumulation += weight[collaboration]
+		if uniform <= accumulation {
+			return fetchedAd
+		}
+		if weight[collaboration] > maxWeight {
+			maxWeight = weight[collaboration]
+			weightiestAd = fetchedAd
+		}
+	}
+	/* Reaching this point might be possible, due to 
+	 inaccuracies of floating-point calculations. Here,
+	 we return the ad with highest weight. */
+	return weightiestAd
+}
+
 /*
 Selects best ads based on AdServer's policy.
 Current policy: to select ad with highest bid.
 */
-func selectAd() FetchedAd {
+func selectAd(publisherId int) FetchedAd {
 	var bestAd FetchedAd
 	var maxBid int = 0
 
+
+	/* If a distribution is available for this publisher, draw a random
+	 ad accordingly. */
+	for _, processedPublisher := range processedPublishers {
+		if (processedPublisher == publisherId) {
+			return drawAdFromDistribution(publisherId)
+		}
+	}
+
+	/* If not, select the ad with the highest bid. */
 	for _, ad := range allFetchedAds {
 		if ad.Bid > maxBid {
 			maxBid = ad.Bid
@@ -266,8 +315,18 @@ func signEvent(event *EventInfo) (string, error) {
 for a new ad.
 */
 func getNewAd(c *gin.Context) {
-	selectedAd := selectAd()
 	publisherId, _ := strconv.Atoi(c.Query(PUBLISHER_ID_RECV_PARAM))
+	var publisherIsRegistered = false
+	for _, registeredPubID := range allPublisherIDs {
+		if publisherId == registeredPubID {
+			publisherIsRegistered = true
+		}
+	}
+	if !publisherIsRegistered {
+		publishersToRegister <- publisherId
+	}
+	
+	selectedAd := selectAd(publisherId)
 	response, err := makeResopnse(selectedAd, publisherId)
 
 	if err != nil {
@@ -287,6 +346,7 @@ func brake(c *gin.Context) {
 	RemoveDisabledAds(disableRequest.AdIDs)
 	c.JSON(http.StatusOK, gin.H{"message": "Ads successfully disabled"})
 }
+
 func CORSMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
@@ -308,14 +368,17 @@ func main() {
 	log.SetPrefix("AdServer:")
 	log.SetFlags(log.Ltime | log.Ldate)
 
-	/* Run the two main workers: ad-fetcher
-	   and query-responser. */
-	go periodicallyFetchAds()
+	/* Configure AdServer's router. */
 	router := gin.Default()
 	p := ginprometheus.NewPrometheus("adserver")
 	p.Use(router)
 	router.Use(CORSMiddleware())
 	router.GET(API_TEMPLATE, getNewAd)
 	router.POST("/api/brake", brake)
+
+	/* Run the three main workers: ad-fetcher,
+	   query-responser and publisher-registerer. */
+	go periodicallyFetchAds()
+	go registerNewPublishers()
 	router.Run(":" + strconv.Itoa(ADSERVER_PORT))
 }
