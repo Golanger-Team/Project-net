@@ -1,7 +1,6 @@
 package main
 
 import (
-	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"net/http"
 )
@@ -20,10 +19,13 @@ func init() {
 
 func main() {
 	router := gin.Default()
-	router.Use(cors.Default())
-
+	//router.Use(cors.Default())
 	router.LoadHTMLGlob("templates/*")
 	router.Static("/static", "./static")
+	router.GET("/test", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"message": "Hello World"})
+		return
+	})
 	router.GET("/:publisher", func(c *gin.Context) {
 		publisher := c.Param("publisher")
 		text, exists := publisherData[publisher]
@@ -36,5 +38,5 @@ func main() {
 		})
 	})
 
-	router.Run(":8089")
+	router.Run(":9123")
 }

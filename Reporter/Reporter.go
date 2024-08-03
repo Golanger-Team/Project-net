@@ -1,11 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log"
-	"time"
+	"net/http"
 
 	"github.com/robfig/cron"
 	"github.com/segmentio/kafka-go"
@@ -21,21 +22,49 @@ const GROUP_ID = "reporter_group"
 
 type Event struct {
 	gorm.Model
-	EventType    string    `json:"type" gorm:"column:event_type"`
-	AdID         string    `json:"ad_id" gorm:"column:ad_id"`
-	AdvertiserID string    `json:"advertiser_id" gorm:"column:advertiser_id"`
-	PublisherID  string    `json:"publisher_id" gorm:"column:publisher_id"`
-	Credit       int       `json:"Credit" gorm:"column:credit"`
-	Time         time.Time `json:"Time" gorm:"column:time"`
+	EventType string `json:"EventType" gorm:"column:event_type"`
+	AdID      string `json:"AdID" gorm:"column:ad_id"`
+	//	AdvertiserID string    `json:"advertiser_id" gorm:"column:advertiser_id"`
+	PublisherID string `json:"PublisherID" gorm:"column:publisher_id"`
+	//	Credit       int       `json:"Credit" gorm:"column:credit"`
+	Time int64 `json:"Time" gorm:"column:time"`
 }
 
 type AggregatedData struct {
 	gorm.Model
-	AdID        int       `gorm:"column:ad_id"`
-	Clicks      int       `gorm:"column:clicks"`
-	Impressions int       `gorm:"column:impressions"`
-	Credit      int       `gorm:"column:credit"`
-	Time        time.Time `gorm:"column:time"`
+	AdID        string `gorm:"column:ad_id"`
+	Clicks      string `gorm:"column:clicks"`
+	Impressions string `gorm:"column:impressions"`
+	//	Credit      string       `gorm:"column:credit"`
+	Time int64 `gorm:"column:time"`
+}
+
+// callInternalAPI simulates calling an internal API to handle the click
+func callAPI(event Event) error {
+	url := fmt.Sprintf("https://panel.lontra.tech/api/v1/ads/%s/event", event.AdID)
+	payload := map[string]interface{}{
+		"publisher_id": event.PublisherID,
+		"event_type":   event.EventType,
+	}
+	body, _ := json.Marshal(payload)
+
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewBuffer(body))
+	if err != nil {
+		return fmt.Errorf("failed to marshal payload: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("received non-200 response: %d", resp.StatusCode)
+	}
+	fmt.Println("stat was 200")
+	return nil
 }
 
 func setupKafkaReader() *kafka.Reader {
@@ -72,6 +101,11 @@ func processEvent(eventData []byte) {
 		return
 	}
 
+	//Added api call here instead of eventserver
+	if err := callAPI(*event); err != nil {
+		log.Printf("Failed to call API for an event: %v\n", err)
+	}
+
 	if err := insertEventIntoDB(event); err != nil {
 		log.Printf("could not insert event into DB: %v", err)
 		return
@@ -92,11 +126,11 @@ func insertEventIntoDB(event *Event) error {
 
 func aggregateData() {
 	var results []struct {
-		AdID        int
-		Clicks      int
-		Impressions int
-		Credit      int
-		Time        time.Time
+		AdID        string
+		Clicks      string
+		Impressions string
+		//	Credit      string
+		Time int64
 	}
 	// Query to aggregate data using GORM
 	db.Table("events").
@@ -115,8 +149,8 @@ func aggregateData() {
 			AdID:        result.AdID,
 			Clicks:      result.Clicks,
 			Impressions: result.Impressions,
-			Credit:      result.Credit,
-			Time:        result.Time,
+			//	Credit:      result.Credit,
+			Time: result.Time,
 		}
 		db.Create(&aggregatedData)
 	}
@@ -145,7 +179,7 @@ func main() {
 
 	// Set up and start the cron job
 	c := cron.New()
-	err = c.AddFunc("* * * * *", aggregateData)
+	err = c.AddFunc("@hourly", aggregateData)
 	if err != nil {
 		log.Fatalf("failed to add cron job: %v", err)
 	}
